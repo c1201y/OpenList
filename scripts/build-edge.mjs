@@ -126,13 +126,13 @@ const nodeShimPlugin = {
   setup(build) {
     const nodeModules = ["crypto", "buffer", "util", "stream", "zlib", "module", "fs", "path"]
     const shimPath = path.resolve(__dirname, "node-shim.mjs")
-    
+
     // 匹配裸模块名（如 "crypto"）
     const bareFilter = new RegExp(`^(${nodeModules.join("|")})$`)
     build.onResolve({ filter: bareFilter }, (args) => {
       return { path: shimPath, external: false }
     })
-    
+
     // 匹配 node: 前缀（如 "node:crypto"）
     const nodeFilter = new RegExp(`^node:(${nodeModules.join("|")})$`)
     build.onResolve({ filter: nodeFilter }, (args) => {
@@ -169,9 +169,9 @@ async function build() {
     plugins: [emptyNodeDriverPlugin],
   })
 
-  // EdgeOne Makers 的 Node 云函数入口。产物按平台约定落在项目根
-  // cloud-functions/[[default]].js，但它**不入库**：EdgeOne 的构建命令
-  // （edgeone.json -> pnpm run build）会在部署时执行本脚本重新生成。
+  // Cloudflare Pages / 旧版 EdgeOne 兜底函数入口：[[default]].js（Cloudflare 命名约定）。
+  // 产物按平台约定落在项目根 cloud-functions/[[default]].js，但它**不入库**：
+  // EdgeOne 的构建命令（edgeone.json -> pnpm run build）会在部署时执行本脚本重新生成。
   await esbuild.build({
     entryPoints: ["api/_makers.ts"],
     bundle: true,
@@ -185,6 +185,39 @@ async function build() {
     loader: { ".html": "text", ".node": "empty" },
     plugins: [emptyNodeDriverPlugin, normalizeHtmlEolPlugin],
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // EdgeOne Makers 专属入口：cloud-functions/api-node/（EdgeOne 官方构建输出约定）
+  //
+  // EdgeOne Makers 的 Node.js 云函数**只识别 cloud-functions/api-node/ 目录**
+  // （需含 index.mjs + config.json），并不识别 Cloudflare 风格的
+  // cloud-functions/[[default]].js。因此这里额外打一份 EdgeOne 认的格式，
+  // 与上面的 [[default]].js 并存：Cloudflare 走前者、EdgeOne 走后者。
+  // ───────────────────────────────────────────────────────────────────────────
+  await esbuild.build({
+    entryPoints: ["api/_makers.ts"],
+    bundle: true,
+    platform: "node",
+    target: "node22",
+    outfile: "cloud-functions/api-node/index.mjs",
+    minify: true,
+    format: "esm",
+    external: ["ssh2", "cpu-features", "iconv-lite", "mysql2"],
+    loader: { ".html": "text", ".node": "empty" },
+    plugins: [emptyNodeDriverPlugin, normalizeHtmlEolPlugin],
+  })
+
+  // EdgeOne Makers api-node 路由表：把所有 /api/* 交给上面的 index.mjs 处理。
+  // version:3 为 EdgeOne 当前构建输出规范。
+  const apiNodeConfig = {
+    version: 3,
+    routes: [{ src: "^/api/(.*)$" }],
+  }
+  fs.mkdirSync("cloud-functions/api-node", { recursive: true })
+  fs.writeFileSync(
+    "cloud-functions/api-node/config.json",
+    JSON.stringify(apiNodeConfig, null, 2),
+  )
 
   // 阿里云 ESA（边缘安全加速）边缘函数入口（仅在源文件存在时构建）
   if (fs.existsSync("esa-entry.ts")) {
@@ -209,7 +242,7 @@ async function build() {
   }
 
   console.log(
-    "✓ Edge build complete -> dist-server/api/[...route].js & cloud-functions/[[default]].js",
+    "✓ Edge build complete -> dist-server/api/[...route].js & cloud-functions/[[default]].js & cloud-functions/api-node/",
   )
 }
 
